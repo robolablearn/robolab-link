@@ -74,11 +74,203 @@ class Arduino {
 
     }
 
+    /**
+     * Ensure custom libraries (like mieo) are present in the libraries folder.
+     * Downloads from GitHub releases if not bundled with the app.
+     */
+    ensureCustomLibraries () {
+        const librariesPath = path.join(this._arduinoPath, 'libraries');
+        const mieoLibPath = path.join(librariesPath, 'mieo');
+        const mieoHeaderPath = path.join(mieoLibPath, 'src', 'mieo.h');
+        
+        // Check if mieo library exists and has the main header
+        if (!fs.existsSync(mieoHeaderPath)) {
+            this._sendstd(`${ansi.yellow_dark}MIEO library not found. Downloading...\n`);
+            
+            // Download the library zip from public repo
+            const zipUrl = 'https://github.com/robolablearn/robolab-releases/raw/main/mieo-library.zip';
+            const zipPath = path.join(this._arduinoPath, 'staging', 'mieo-library.zip');
+            const extractPath = librariesPath;
+            
+            // Create staging directory if needed
+            if (!fs.existsSync(path.dirname(zipPath))) {
+                fs.mkdirSync(path.dirname(zipPath), { recursive: true });
+            }
+            
+            try {
+                // Download using curl (available on Windows 10+, macOS, Linux)
+                let downloadResult;
+                if (os.platform() === 'win32') {
+                    // Use PowerShell on Windows
+                    downloadResult = spawnSync('powershell', [
+                        '-Command',
+                        `Invoke-WebRequest -Uri '${zipUrl}' -OutFile '${zipPath}'`
+                    ], { timeout: 120000 });
+                } else {
+                    // Use curl on macOS/Linux
+                    downloadResult = spawnSync('curl', ['-sL', '-o', zipPath, zipUrl], { timeout: 120000 });
+                }
+                
+                if (fs.existsSync(zipPath) && fs.statSync(zipPath).size > 1000) {
+                    this._sendstd(`${ansi.green_dark}Downloaded MIEO library. Extracting...\n`);
+                    
+                    // Extract using unzip or PowerShell
+                    let extractResult;
+                    if (os.platform() === 'win32') {
+                        extractResult = spawnSync('powershell', [
+                            '-Command',
+                            `Expand-Archive -Path '${zipPath}' -DestinationPath '${extractPath}' -Force`
+                        ], { timeout: 60000 });
+                    } else {
+                        extractResult = spawnSync('unzip', ['-o', zipPath, '-d', extractPath], { timeout: 60000 });
+                    }
+                    
+                    // Rename mieo-library to mieo if needed
+                    const extractedPath = path.join(extractPath, 'mieo-library');
+                    if (fs.existsSync(extractedPath) && !fs.existsSync(mieoLibPath)) {
+                        fs.renameSync(extractedPath, mieoLibPath);
+                    }
+                    
+                    // Clean up zip
+                    try { fs.unlinkSync(zipPath); } catch (e) {}
+                    
+                    if (fs.existsSync(mieoHeaderPath)) {
+                        this._sendstd(`${ansi.green_dark}MIEO library installed successfully!\n`);
+                    } else {
+                        this._sendstd(`${ansi.red}MIEO library extraction failed.\n`);
+                    }
+                } else {
+                    this._sendstd(`${ansi.red}Failed to download MIEO library. Check your internet connection.\n`);
+                }
+            } catch (err) {
+                this._sendstd(`${ansi.red}Error installing MIEO library: ${err.message}\n`);
+            }
+        }
+    }
+
+    /**
+     * Recursively copy a directory
+     */
+    _copyRecursive (src, dest) {
+        if (!fs.existsSync(src)) return;
+        
+        const stats = fs.statSync(src);
+        if (stats.isDirectory()) {
+            if (!fs.existsSync(dest)) {
+                fs.mkdirSync(dest, { recursive: true });
+            }
+            const files = fs.readdirSync(src);
+            files.forEach(file => {
+                this._copyRecursive(path.join(src, file), path.join(dest, file));
+            });
+        } else {
+            const destDir = path.dirname(dest);
+            if (!fs.existsSync(destDir)) {
+                fs.mkdirSync(destDir, { recursive: true });
+            }
+            fs.copyFileSync(src, dest);
+        }
+    }
+
+    /**
+     * Check if the required Arduino core is installed, and install it if missing.
+     * This enables on-demand downloading of board toolchains.
+     * @returns {Promise<string>} - Resolves with 'Success' or 'Already installed'
+     */
+    ensureCoreInstalled () {
+        return new Promise((resolve, reject) => {
+            // Extract core name from fqbn (e.g., "arduino:avr:uno" -> "arduino:avr")
+            const fqbnParts = this._config.fqbn.split(':');
+            if (fqbnParts.length < 2) {
+                return reject(new Error(`Invalid FQBN format: ${this._config.fqbn}`));
+            }
+            const coreName = `${fqbnParts[0]}:${fqbnParts[1]}`;
+
+            this._sendstd(`${ansi.clear}Checking if board toolchain is installed...\n`);
+
+            // Check if core is already installed
+            const listResult = spawnSync(this._arduinoCliPath, [
+                'core', 'list',
+                '--config-file', this._configFilePath,
+                '--format', 'json'
+            ]);
+
+            if (listResult.error) {
+                return reject(new Error(`Failed to list cores: ${listResult.error.message}`));
+            }
+
+            try {
+                const installedCores = JSON.parse(listResult.stdout.toString() || '[]');
+                const isInstalled = installedCores.some(core => core.id === coreName);
+
+                if (isInstalled) {
+                    this._sendstd(`${ansi.green_dark}Board toolchain ${coreName} is already installed.\n`);
+                    return resolve('Already installed');
+                }
+            } catch (err) {
+                // If parsing fails, assume not installed and try to install
+                this._sendstd(`${ansi.yellow_dark}Could not parse installed cores, will attempt installation.\n`);
+            }
+
+            // Core not installed, need to download and install
+            this._sendstd(`${ansi.yellow_dark}Board toolchain ${coreName} not found. Downloading...\n`);
+            this._sendstd(`${ansi.clear}This may take a few minutes depending on your internet connection.\n`);
+
+            const installProcess = spawn(this._arduinoCliPath, [
+                'core', 'install', coreName,
+                '--config-file', this._configFilePath
+            ]);
+
+            installProcess.stdout.on('data', buf => {
+                const data = buf.toString();
+                // Show download progress
+                if (data.includes('Downloading') || data.includes('Installing')) {
+                    this._sendstd(`${ansi.green_dark}${data}`);
+                } else {
+                    this._sendstd(`${ansi.clear}${data}`);
+                }
+            });
+
+            installProcess.stderr.on('data', buf => {
+                const data = buf.toString();
+                this._sendstd(`${ansi.yellow_dark}${data}`);
+            });
+
+            const listenAbortSignal = setInterval(() => {
+                if (this._abort) {
+                    installProcess.kill();
+                }
+            }, ABORT_STATE_CHECK_INTERVAL);
+
+            installProcess.on('exit', code => {
+                clearInterval(listenAbortSignal);
+                if (code === 0) {
+                    this._sendstd(`${ansi.green_dark}Board toolchain ${coreName} installed successfully!\n`);
+                    return resolve('Success');
+                } else if (this._abort) {
+                    return resolve('Aborted');
+                } else {
+                    return reject(new Error(`Failed to install board toolchain ${coreName}. Exit code: ${code}`));
+                }
+            });
+        });
+    }
+
     abortUpload () {
         this._abort = true;
     }
 
-    build (code) {
+    async build (code) {
+        // First ensure the required core is installed (on-demand download)
+        try {
+            await this.ensureCoreInstalled();
+        } catch (err) {
+            throw new Error(`Failed to prepare board toolchain: ${err.message}`);
+        }
+
+        // Ensure custom libraries (like mieo) are in place
+        this.ensureCustomLibraries();
+
         return new Promise((resolve, reject) => {
             if (!fs.existsSync(this._codeFolderPath)) {
                 fs.mkdirSync(this._codeFolderPath, {recursive: true});
