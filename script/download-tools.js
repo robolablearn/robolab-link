@@ -149,7 +149,11 @@ const downloadAndVerifyFile = async (fileUrl, filePath, expectedChecksum) => new
 // Download files
 const downloadReleaseAssets = async () => {
     try {
-        const {data} = await axios.get(releaseApiUrl);
+        const headers = {};
+        if (process.env.GITHUB_TOKEN) {
+            headers.Authorization = `token ${process.env.GITHUB_TOKEN}`;
+        }
+        const {data} = await axios.get(releaseApiUrl, {headers});
         const assets = data.assets.filter(asset => asset.name.endsWith('.7z') && asset.name.includes(systemPlatform));
 
         if (assets.length === 0) {
