@@ -6,6 +6,8 @@ const path = require('path');
 const fetch = require('node-fetch');
 const clc = require('cli-color');
 
+const mieoLibrary = require('./lib/mieo-library');
+
 /**
  * Configuration the default user data path. Just for debug.
  * @readonly
@@ -49,6 +51,18 @@ const REOPEN_INTERVAL = 1000 * 1;
 const ROUTERS = {
     '/openblock/serialport': require('./session/serialport') // eslint-disable-line global-require
 };
+
+/**
+ * Where the board-side Python library is served from.
+ *
+ * Uploads over Bluetooth are driven from the editor, which cannot read this
+ * package off disk itself. Rather than push fifty kilobytes through the
+ * websocket on the off chance it is needed, the editor asks here: the bare
+ * route lists what each file should be, and only the ones a board is actually
+ * missing get fetched.
+ * @readonly
+ */
+const LIBRARY_ROUTE = '/mieo/library';
 
 /**
  * A server to provide local hardware api.
@@ -106,6 +120,49 @@ class OpenBlockLink extends Emitter{
             });
     }
 
+    /**
+     * Answer a request for the board-side library.
+     *
+     * `/mieo/library` gives the manifest -- what each file should be, by
+     * checksum. `/mieo/library/<name>` gives one file, and only names in the
+     * library are served, so this cannot be walked out of.
+     * @param {http.IncomingMessage} request - the request being answered.
+     * @param {http.ServerResponse} res - where to write the answer.
+     */
+    serveLibrary (request, res) {
+        // The editor asks for this from a page loaded over file:// in the
+        // packaged app, which the browser treats as a null origin -- so
+        // without this the request is refused before it is ever sent. What is
+        // served is a handful of read-only .py files on the loopback
+        // interface, so there is nothing here worth guarding from a page that
+        // could already reach it.
+        res.setHeader('Access-Control-Allow-Origin', '*');
+
+        const name = decodeURIComponent(request.url.slice(LIBRARY_ROUTE.length).replace(/^\//, ''));
+
+        if (!name) {
+            const body = JSON.stringify({files: mieoLibrary.manifest()});
+            res.writeHead(200, {'Content-Type': 'application/json'});
+            res.end(body);
+            return;
+        }
+
+        if (!mieoLibrary.LIBRARY_FILES.includes(name)) {
+            res.writeHead(404, {'Content-Type': 'text/plain'});
+            res.end('not part of the Mieo library');
+            return;
+        }
+
+        try {
+            const contents = mieoLibrary.readLibrary(name);
+            res.writeHead(200, {'Content-Type': 'text/x-python'});
+            res.end(contents);
+        } catch (err) {
+            res.writeHead(500, {'Content-Type': 'text/plain'});
+            res.end(err.message);
+        }
+    }
+
     isSameServer (host, port) {
         return new Promise((resolve, reject) => {
             fetch(`http://${host}:${port}`)
@@ -137,7 +194,17 @@ class OpenBlockLink extends Emitter{
             if (request.url === '/') {
                 res.writeHead(200, {'Content-Type': 'text/html'});
                 res.end(SERVER_NAME);
+                return;
             }
+            if (request.url.startsWith(LIBRARY_ROUTE)) {
+                this.serveLibrary(request, res);
+                return;
+            }
+            // Anything else has to be answered too. Writing nothing leaves the
+            // socket open until whoever asked gives up, which reads as "the
+            // link server has hung" rather than "no such thing here".
+            res.writeHead(404, {'Content-Type': 'text/plain'});
+            res.end('not found');
         });
 
         this._httpServer.on('error', e => {
