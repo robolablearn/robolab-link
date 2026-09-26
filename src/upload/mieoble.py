@@ -261,7 +261,7 @@ def _indicator(_arg):
     """
     try:
         import mieo
-        mieo.showbluetooth()
+        mieo.bluetoothindicator(False)
     except Exception:
         pass
 
@@ -416,3 +416,7 @@ def stop():
         _uart._ble.active(False)
     _uart = None
     _stream = None
+    # The radio is down, so nothing can be connected: put the lamp out. Done
+    # here rather than through the scheduler because this is ordinary code,
+    # not a Bluetooth callback.
+    _indicator(0)
