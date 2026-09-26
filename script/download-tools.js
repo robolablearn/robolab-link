@@ -28,11 +28,24 @@ const formatBytes = bytes => {
     return `${bytes} B`;
 };
 
-// Extract 7z file
-const extract7zFile = (filePath, fileName) => {
+// Extract 7z file. Resolves only once the archive is fully extracted and
+// rejects on any failure, so this script -- and the npm script chain behind it
+// -- fails instead of carrying on with an empty tools/ directory.
+const extract7zFile = (filePath, fileName) => new Promise((resolve, reject) => {
     const outputDir = path.join(extractPath);
     if (!fs.existsSync(outputDir)) {
         fs.mkdirSync(outputDir, {recursive: true});
+    }
+
+    // 7zip-bin can arrive without the execute bit on its binaries -- the case
+    // on the macOS and Linux CI runners -- and spawning it then fails with
+    // EACCES. Restore the mode rather than rely on how npm unpacked it.
+    if (systemPlatform !== 'win32') {
+        try {
+            fs.chmodSync(path7za, 0o755);
+        } catch (err) {
+            // If the mode cannot be fixed, the spawn below reports why.
+        }
     }
 
     console.log(`Extracting ${fileName} to ${outputDir}...`);
@@ -44,6 +57,7 @@ const extract7zFile = (filePath, fileName) => {
         clear: true
     });
 
+    let failed = false;
     const sevenStream = extractFull(filePath, outputDir, {
         $bin: path7za,
         $progress: true
@@ -53,15 +67,22 @@ const extract7zFile = (filePath, fileName) => {
         bar.update(progress.percent / 100);
     });
 
-    sevenStream.on('end', () => {
-        bar.update(1);
-        console.log(`Successfully extracted ${fileName} to ${outputDir}`);
+    sevenStream.on('error', err => {
+        failed = true;
+        console.error(`Error extracting ${fileName}:`, err);
+        reject(err);
     });
 
-    sevenStream.on('error', err => {
-        console.error(`Error extracting ${fileName}:`, err);
+    // node-7z emits 'end' after 'error' as well, so 'end' alone is not success.
+    // Printing success here unconditionally is what made every macOS and Linux
+    // build log report "Successfully extracted" straight after an EACCES.
+    sevenStream.on('end', () => {
+        if (failed) return;
+        bar.update(1);
+        console.log(`Successfully extracted ${fileName} to ${outputDir}`);
+        resolve();
     });
-};
+});
 
 // Verify the checksum of the downloaded file
 const verifyChecksum = async (filePath, expectedChecksum) => new Promise((resolve, reject) => {
@@ -186,7 +207,7 @@ const downloadReleaseAssets = async () => {
                 const isValid = await verifyChecksum(filePath, expectedChecksum);
                 if (isValid) {
                     console.log(`File ${fileName} already exists and checksum matches. Skipping download.`);
-                    extract7zFile(filePath, fileName);
+                    await extract7zFile(filePath, fileName);
                     continue;
                 }
             }
@@ -197,7 +218,7 @@ const downloadReleaseAssets = async () => {
                 return false;
             }
 
-            extract7zFile(filePath, fileName);
+            await extract7zFile(filePath, fileName);
         }
 
         return true;

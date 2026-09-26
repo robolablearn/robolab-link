@@ -16,6 +16,58 @@ const BOARD_BOOT_TIMEOUT = 30000;
 const ESPTOOL_MODULE_NAME = 'esptool';
 const MPREMOTE_MODULE_NAME = 'mpremote';
 
+/**
+ * Whether a Python can run the uploader: it must start, and import both tools
+ * the uploader drives. Existing on disk is not enough -- see pickPython.
+ * @param {string} py - a Python executable path or name on PATH.
+ * @returns {boolean} - true if it imported esptool and mpremote.
+ */
+const pythonHasTools = py => {
+    try {
+        const result = spawnSync(py, ['-c', `import ${ESPTOOL_MODULE_NAME}, ${MPREMOTE_MODULE_NAME}`], {
+            timeout: 20000,
+            windowsHide: true
+        });
+        return result.status === 0;
+    } catch (err) {
+        return false;
+    }
+};
+
+// Cached once found: every upload builds a fresh uploader, and probing starts
+// a Python process. A miss is not cached, so installing the packages mid-
+// session is picked up by the next upload.
+let resolvedPython = null;
+
+/**
+ * Choose the Python to drive esptool and mpremote with.
+ *
+ * The bundled one is preferred, but only if it actually works. It used to be
+ * chosen merely for existing, and it does not work: the macOS build in
+ * openblock-tools links against a Homebrew libintl at an Intel-Homebrew path
+ * (/usr/local/opt/gettext) and cannot start on an Apple Silicon Mac or on any
+ * Mac without that library, and no bundled build carries mpremote. Once
+ * tools/ was actually packaged, that turned every Mieo upload into a crash.
+ * The system Python is what works for anyone who has run
+ * `pip install esptool mpremote`.
+ * @param {string} bundledPyPath - where the bundled interpreter would be.
+ * @returns {string} - the Python to use.
+ */
+const pickPython = bundledPyPath => {
+    if (resolvedPython) return resolvedPython;
+    const system = os.platform() === 'win32' ? ['python', 'py'] : ['python3', 'python'];
+    const candidates = (fs.existsSync(bundledPyPath) ? [bundledPyPath] : []).concat(system);
+    const found = candidates.find(pythonHasTools);
+    if (found) {
+        resolvedPython = found;
+        return found;
+    }
+    // Nothing has both packages. Use the system Python, so the failure the
+    // user sees is the actionable "pip install esptool mpremote" rather than a
+    // crash inside a bundled interpreter they cannot repair.
+    return system[0];
+};
+
 // Standard flash offset for the MicroPython bootloader/app image on the
 // original ESP32 (WROOM-32 / WROOM-32E / WROVER). Other Espressif chips
 // (S2/S3/C3...) use a different offset, but those are separate devices.
@@ -37,8 +89,8 @@ class Esp32MicroPython {
         this._abort = false;
         this._activeProcess = null;
 
-        // Prefer a bundled Python (shipped alongside the other board toolchains),
-        // falling back to whatever "python"/"python3" is available on PATH.
+        // Prefer a bundled Python (shipped alongside the other board toolchains)
+        // when it actually works; otherwise the system one. See pickPython.
         const pythonDir = path.join(toolsPath, 'Python');
         let bundledPyPath;
         if (os.platform() === 'darwin') {
@@ -48,9 +100,7 @@ class Esp32MicroPython {
         } else {
             bundledPyPath = path.join(pythonDir, 'python.exe');
         }
-        this._pyPath = fs.existsSync(bundledPyPath) ?
-            bundledPyPath :
-            (os.platform() === 'win32' ? 'python' : 'python3');
+        this._pyPath = pickPython(bundledPyPath);
 
         // Made here rather than in flash(): flashRealtimeFirmware() also writes
         // into it, and a profile whose very first action is "Upload Firmware"

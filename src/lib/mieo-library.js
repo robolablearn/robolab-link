@@ -13,7 +13,15 @@ const path = require('path');
  */
 
 /** Where the .py files that go on the board live in this package. */
-const LIBRARY_DIR = path.join(__dirname, '../upload');
+//
+// Packaged, this file is loaded out of app.asar, so __dirname points inside the
+// archive. Electron's fs reads through that transparently, but these paths are
+// also handed to mpremote -- a separate Python process -- and to it
+// app.asar/... is a path through a file, which does not exist. electron-builder
+// unpacks src/upload/ (asarUnpack), so point at those copies on real disk.
+// Outside a packaged build there is no app.asar in the path and this is a no-op.
+const LIBRARY_DIR = path.join(__dirname, '../upload')
+    .replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
 
 /**
  * What gets copied to the board, in the order it is copied.
