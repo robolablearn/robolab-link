@@ -593,17 +593,16 @@ def setpwm(pin, value):
 
 # --------------------------------------------------------- bluetooth indicator
 
-#: The first pixel of the panel doubles as a Bluetooth lamp: lit while the
-#: board has power and nothing has connected to it, dark once something has.
-#: Off unless a project asks for it, so a picture still gets all 35 pixels.
-BLUETOOTH_INDICATOR_XY = (1, 1)
+#: The first pixel of the fifth row is a startup lamp: blue after boot, dark
+#: after the first Bluetooth connection or successful program upload.
+BLUETOOTH_INDICATOR_XY = (1, 5)
 BLUETOOTH_INDICATOR_COLOR = "#0080FF"
 
 _bt_indicator = False
 
 
 def bluetoothindicator(state=True):
-    """Switch the Bluetooth lamp on the first pixel on or off.
+    """Switch the Bluetooth lamp on the bottom left pixel on or off.
 
     Takes the block's own words as well as a plain true or false, so that
     "enable" and "disable" work whichever mode the block runs in.
@@ -613,7 +612,8 @@ def bluetoothindicator(state=True):
         state = state.strip().lower() not in ("disable", "off", "false", "0", "")
     _bt_indicator = bool(state)
     if _bt_indicator:
-        showbluetooth()
+        _setled(BLUETOOTH_INDICATOR_XY[0], BLUETOOTH_INDICATOR_XY[1],
+                BLUETOOTH_INDICATOR_COLOR)
     else:
         _setled(BLUETOOTH_INDICATOR_XY[0], BLUETOOTH_INDICATOR_XY[1], (0, 0, 0))
     return _bt_indicator
@@ -627,7 +627,7 @@ def bluetoothindicatoron():
 def showbluetooth():
     """Put the Bluetooth lamp into the right state for this moment.
 
-    Lit while nobody is connected, dark while somebody is. Called when the
+    Blue while somebody is connected, dark while nobody is. Called when the
     block switches the indicator, and again from mieoble's event handler, so
     the pixel follows the link without anything having to poll it. Does
     nothing while the indicator is off, so it is safe to call unconditionally.
@@ -638,12 +638,12 @@ def showbluetooth():
         import mieoble
         linked = mieoble.connected()
     except Exception:
-        # No radio on this build, or it has not been started yet. Showing the
-        # board as still waiting is the honest answer either way.
+        # No radio on this build, or it has not been started yet. Nothing is
+        # connected either way, so the lamp stays dark.
         linked = False
     x, y = BLUETOOTH_INDICATOR_XY
     if linked:
-        _setled(x, y, (0, 0, 0))
-    else:
         _setled(x, y, BLUETOOTH_INDICATOR_COLOR)
-    return not linked
+    else:
+        _setled(x, y, (0, 0, 0))
+    return linked

@@ -317,6 +317,12 @@ def commit():
         _unlink(name + ".sum")
         _sync()
 
+        try:
+            import mieo
+            mieo.bluetoothindicator(False)
+        except Exception:
+            pass
+
         _reset()
         return _say("OK")
     except Exception as e:
