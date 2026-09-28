@@ -296,7 +296,12 @@ class BLEUARTStream(io.IOBase):
     def __init__(self, uart):
         self._uart = uart
         self._tx_buf = bytearray()
-        self._timer = machine.Timer(-1)
+        # Timer 3, by number. Timer(-1) used to decode to Timer(3) on this port,
+        # but MicroPython 1.25 rejects it as "invalid Timer number" -- and the
+        # radio is already up by then, so the board still connects over
+        # Bluetooth with no REPL behind it. Sound, display and the line
+        # follower hold timers 0 to 2.
+        self._timer = machine.Timer(3)
         self._uart.irq(self._on_rx)
 
     def _on_rx(self):
